@@ -168,6 +168,11 @@ class EventListener:
             c_void_p(None) if mouse_move_func is None else mouse_move_func
         )
 
+    def stop(self):
+        err = vinput.EventListener_stop(pointer(self._listener))
+        if err != 0:
+            raise VInputException(vinput.VInput_error_get_message(err))
+
 class _EventEmulator(Structure):
     _fields_ = [
         ('initialized', c_bool),
