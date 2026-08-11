@@ -6,6 +6,7 @@ on:
     - cron: "0 0 1 * *"
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -66,7 +67,67 @@ jobs:
           git commit -m "Update binaries and version bump"
           git push origin "HEAD:$DEFAULT_BRANCH"
 
+          # Give checks triggered by pushed commit time to register, then wait for them.
+          commit=$(git rev-parse HEAD)
+          discovery_deadline=$((SECONDS + 30))
+          deadline=$((SECONDS + 900))
+          stable_polls=0
+          ci_ready=false
+
+          while (( SECONDS < deadline )); do
+            runs=$(gh run list \
+              --commit "$commit" \
+              --limit 100 \
+              --json conclusion,name,status,url)
+            total=$(jq 'length' <<< "$runs")
+            pending=$(jq '[.[] | select(.status != "completed")] | length' <<< "$runs")
+
+            if (( total == 0 && SECONDS < discovery_deadline )); then
+              echo "Waiting for dependent CI runs to register..."
+              sleep 10
+              continue
+            fi
+
+            failures=$(jq -r '
+              .[]
+              | select(
+                  .status == "completed"
+                  and .conclusion != "success"
+                  and .conclusion != "neutral"
+                  and .conclusion != "skipped"
+                )
+              | "\(.name): \(.conclusion) \(.url)"
+            ' <<< "$runs")
+            if [[ -n "$failures" ]]; then
+              echo "Dependent CI failed:"
+              echo "$failures"
+              exit 1
+            fi
+
+            if (( pending > 0 )); then
+              echo "Waiting for $pending of $total dependent CI run(s)..."
+              stable_polls=0
+            else
+              # Require two clean polls so newly queued runs can appear.
+              stable_polls=$((stable_polls + 1))
+              if (( stable_polls >= 2 )); then
+                echo "All $total dependent CI run(s) passed."
+                ci_ready=true
+                break
+              fi
+              echo "Dependent CI complete; checking once more..."
+            fi
+            sleep 10
+          done
+
+          if [[ "$ci_ready" != true ]]; then
+            echo "Timed out waiting for dependent CI."
+            exit 1
+          fi
+
           gh release create "$TAG" \
             --target "$DEFAULT_BRANCH" \
             --title "$TAG" \
             --generate-notes
+
+          gh workflow run python-publish.yml --ref "$DEFAULT_BRANCH"
