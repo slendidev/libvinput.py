@@ -4,7 +4,7 @@ build-backend = 'setuptools.build_meta'
 
 [project]
 name = 'vinput'
-version = '0.6.2'
+version = '1.3.0'
 description = 'Python bindings for the libvinput library'
 readme = 'README.md'
 
