@@ -162,11 +162,21 @@ class EventListener:
         mouse_move_func = None if mouse_move_callback is None else MOUSE_MOVE_FUNC(mouse_move_callback)
         
         vinput.EventListener2_start(
-            pointer(self._listener), 
-            keyboard_func, 
-            c_void_p(None) if mouse_button_func is None else mouse_button_func, 
+            pointer(self._listener),
+            keyboard_func,
+            c_void_p(None) if mouse_button_func is None else mouse_button_func,
             c_void_p(None) if mouse_move_func is None else mouse_move_func
         )
+
+    def stop(self):
+        """Stop a running listener, causing the blocking start() call to return.
+
+        Safe to call from a different thread than the one that called start().
+        No-op if the listener is not currently running.
+        """
+        err = vinput.EventListener_stop(pointer(self._listener))
+        if err != 0:
+            raise VInputException(vinput.VInput_error_get_message(err))
 
 class _EventEmulator(Structure):
     _fields_ = [
