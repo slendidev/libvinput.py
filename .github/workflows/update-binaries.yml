@@ -1,0 +1,72 @@
+name: Update bundled binaries
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 1 * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-bundled-binaries
+  cancel-in-progress: false
+
+jobs:
+  update-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Update binaries
+        id: update
+        run: |
+          python update_binaries.py
+
+          if git diff --quiet -- vinput/lib; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Bundled binaries already match latest libvinput release."
+            exit 0
+          fi
+
+          version=$(python - <<'PY'
+          import re
+          from pathlib import Path
+
+          path = Path("pyproject.toml")
+          contents = path.read_text()
+          pattern = r"(?m)^version = '(\d+)\.(\d+)\.(\d+)'$"
+          match = re.search(pattern, contents)
+          if match is None:
+              raise SystemExit("Could not find semantic project version in pyproject.toml")
+
+          major, minor, patch = map(int, match.groups())
+          version = f"{major}.{minor}.{patch + 1}"
+          path.write_text(re.sub(pattern, f"version = '{version}'", contents, count=1))
+          print(version)
+          PY
+          )
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          TAG: ${{ steps.update.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml vinput/lib
+          git commit -m "Update binaries and version bump"
+          git push origin "HEAD:$DEFAULT_BRANCH"
+
+          gh release create "$TAG" \
+            --target "$DEFAULT_BRANCH" \
+            --title "$TAG" \
+            --generate-notes
