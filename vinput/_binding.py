@@ -142,7 +142,7 @@ class EventListener:
             raise VInputException(vinput.VInput_error_get_message(err))
 
     def __del__(self):
-        err = vinput.EventListener_free(self._listener)
+        err = vinput.EventListener_free(pointer(self._listener))
         if err != 0:
             raise VInputException(vinput.VInput_error_get_message(err))
 
