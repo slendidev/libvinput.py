@@ -1,0 +1,115 @@
+name: Update libvinput binaries
+
+# Refreshes the bundled libvinput shared libraries whenever a new libvinput
+# release is published, syncs the package version to that release, and cuts a
+# matching release here (which the "Upload Python Package" workflow publishes
+# to PyPI).
+#
+# Triggers:
+#   * repository_dispatch (libvinput-release): fired by the libvinput repo the
+#     instant a release is published (see libvinput/.github/workflows/release.yml).
+#   * workflow_dispatch: run manually, optionally pinning a libvinput tag.
+#   * schedule: daily safety net in case a dispatch is missed.
+#
+# Secrets:
+#   * RELEASE_PAT (optional): a PAT with `contents: write` on this repo. Used to
+#     create the release so that the release-triggered PyPI publish workflow
+#     runs. Without it the release is still created with GITHUB_TOKEN, but note
+#     that GITHUB_TOKEN-created releases do NOT trigger other workflows, so the
+#     PyPI publish would then have to be started manually.
+
+on:
+  repository_dispatch:
+    types: [libvinput-release]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "libvinput release tag to pull (blank = latest)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-binaries
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Download libvinput binaries
+        id: fetch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Source of the libvinput binaries; override per-fork with a repo variable.
+          LIBVINPUT_REPO: ${{ vars.LIBVINPUT_REPO || 'slendidev/libvinput' }}
+          LIBVINPUT_TAG: ${{ github.event.client_payload.tag || inputs.tag || '' }}
+        run: python update_binaries.py
+
+      - name: Sync package version to libvinput release
+        env:
+          VERSION: ${{ steps.fetch.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os, re
+          version = os.environ["VERSION"]
+          with open("pyproject.toml") as f:
+              content = f.read()
+          content = re.sub(r"(?m)^version = .*$", f"version = '{version}'", content, count=1)
+          with open("pyproject.toml", "w") as f:
+              f.write(content)
+          print(f"pyproject.toml version set to {version}")
+          PY
+
+      - name: Detect changes
+        id: diff
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No changes; binaries already up to date."
+          fi
+
+      - name: Commit and push
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A vinput/lib pyproject.toml
+          git commit -m "Update binaries and version bump to ${{ steps.fetch.outputs.version }}"
+          git push origin HEAD:${{ github.ref_name }}
+
+      - name: Check whether release already exists
+        if: steps.diff.outputs.changed == 'true'
+        id: tagcheck
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.fetch.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ steps.fetch.outputs.tag }} already exists; skipping release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release
+        if: steps.diff.outputs.changed == 'true' && steps.tagcheck.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.fetch.outputs.tag }}
+          target_commitish: ${{ github.ref_name }}
+          name: ${{ steps.fetch.outputs.tag }}
+          generate_release_notes: true
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
